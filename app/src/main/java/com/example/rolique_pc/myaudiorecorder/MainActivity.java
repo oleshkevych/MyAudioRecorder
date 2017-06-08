@@ -18,14 +18,15 @@ import android.widget.Button;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 
-import com.musicg.fingerprint.FingerprintSimilarity;
-import com.musicg.wave.Wave;
-
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+import java.util.MissingFormatArgumentException;
 
 public class MainActivity extends AppCompatActivity {
 
@@ -36,11 +37,21 @@ public class MainActivity extends AppCompatActivity {
     private static String mNewFileName1;
     private static String mNewFileName2;
     private String mFileName2;
+    boolean mIsRecording;
+
+    private AudioRecord mRecorder;
+    private int bufferSize = 0;
+    private Thread mRecordingThread;
+    private Thread mComparingThread;
+    List<Double> mFirstSoundFrequency = new ArrayList<>();
+    List<Double> mSecondSoundFrequency = new ArrayList<>();
+    int mStartRecording = 0;
 
     private static final int RECORDER_BPP = 16;
-    private static final int RECORDER_SAMPLERATE = 8000;
+    private static final int RECORDER_SAMPLERATE = 44100;
+    private static final int RECORDER_CHANNELS = AudioFormat.CHANNEL_IN_STEREO;
 
-    private MediaRecorder mRecorder;
+    private static final int RECORDER_AUDIO_ENCODING = AudioFormat.ENCODING_PCM_16BIT;
 
     private MediaPlayer mPlayer;
 
@@ -50,6 +61,97 @@ public class MainActivity extends AppCompatActivity {
     // Requesting permission to RECORD_AUDIO
     private boolean permissionToRecordAccepted;
     private String[] permissions = {Manifest.permission.RECORD_AUDIO, Manifest.permission.WRITE_EXTERNAL_STORAGE};
+
+    //    private void startRecording(int fileNumber) {
+//        mRecorder = new MediaRecorder();
+//        mRecorder.setAudioSource(MediaRecorder.AudioSource.MIC);
+//        mRecorder.setOutputFormat(MediaRecorder.OutputFormat.THREE_GPP);
+//        mRecorder.setOutputFile(fileNumber == 0 ? mFileName1 : mFileName2);
+//        mRecorder.setAudioEncoder(MediaRecorder.AudioEncoder.AMR_NB);
+//
+//        try {
+//            mRecorder.prepare();
+//        } catch (IOException e) {
+//            Log.e(LOG_TAG, "prepare() failed");
+//        }
+//
+//        mRecorder.start();
+//    private void stopRecording() {
+//        if (mRecorder != null) {
+//            mRecorder.stop();
+//            mRecorder.release();
+//            mRecorder = null;
+//        }
+    @Override
+    public void onCreate(Bundle icicle) {
+        super.onCreate(icicle);
+        // Record to the external cache directory for visibility
+        mFileName1 = getExternalCacheDir().getAbsolutePath() + "/audiorecordtest1.3gp";
+        mNewFileName1 = getExternalCacheDir().getAbsolutePath() + "/audiorecordWithHeader.wav";
+        mNewFileName2 = getExternalCacheDir().getAbsolutePath() + "/musicWithHeader.wav";
+        mFileName2 = getExternalCacheDir().getAbsolutePath() + "/audiorecordtest2.3gp";
+
+        ActivityCompat.requestPermissions(MainActivity.this, permissions, REQUEST_RECORD_AUDIO_PERMISSION);
+
+        LinearLayout ll = new LinearLayout(MainActivity.this);
+        ll.setOrientation(LinearLayout.VERTICAL);
+
+        LinearLayout llh = new LinearLayout(MainActivity.this);
+        llh.setOrientation(LinearLayout.HORIZONTAL);
+        Button recordButton = new RecordButton(MainActivity.this);
+        llh.addView(recordButton,
+                new LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.WRAP_CONTENT,
+                        ViewGroup.LayoutParams.WRAP_CONTENT,
+                        10));
+        Button record2Button = new RecordSecondButton(MainActivity.this);
+        llh.addView(record2Button,
+                new LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.WRAP_CONTENT,
+                        ViewGroup.LayoutParams.WRAP_CONTENT,
+                        10));
+        ll.addView(llh);
+
+        LinearLayout llhPlay = new LinearLayout(MainActivity.this);
+        llhPlay.setOrientation(LinearLayout.HORIZONTAL);
+        Button play1 = new PlayButton(MainActivity.this);
+        llhPlay.addView(play1,
+                new LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.WRAP_CONTENT,
+                        ViewGroup.LayoutParams.WRAP_CONTENT,
+                        10));
+        Button play2 = new PlayMusicButton(MainActivity.this);
+        llhPlay.addView(play2,
+                new LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.WRAP_CONTENT,
+                        ViewGroup.LayoutParams.WRAP_CONTENT,
+                        10));
+        ll.addView(llhPlay);
+
+        Button compareButton = new CompareButton(MainActivity.this);
+        ll.addView(compareButton,
+                new LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.WRAP_CONTENT,
+                        ViewGroup.LayoutParams.WRAP_CONTENT,
+                        10));
+        mResultsTextView = new TextView(MainActivity.this);
+        mResultsTextView.setText("Results ");
+        ll.addView(mResultsTextView,
+                new LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.WRAP_CONTENT,
+                        50));
+        mResults1TextView = new TextView(MainActivity.this);
+        ll.addView(mResults1TextView,
+                new LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.WRAP_CONTENT,
+                        50));
+        setContentView(ll);
+
+        bufferSize = AudioRecord.getMinBufferSize
+                (RECORDER_SAMPLERATE, RECORDER_CHANNELS, RECORDER_AUDIO_ENCODING);
+    }
 
     @Override
     public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions, @NonNull int[] grantResults) {
@@ -69,12 +171,14 @@ public class MainActivity extends AppCompatActivity {
     private void onRecord(int startRecording) {
         switch (startRecording % 3) {
             case 2:
-                stopRecording();
+                stopRecording(2);
                 break;
             case 1:
+                mSecondSoundFrequency.clear();
                 startRecording(1);
                 break;
             case 0:
+                mFirstSoundFrequency.clear();
                 startRecording(0);
                 break;
         }
@@ -107,32 +211,103 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    private void startRecording(int fileNumber) {
-        mRecorder = new MediaRecorder();
-        mRecorder.setAudioSource(MediaRecorder.AudioSource.MIC);
-        mRecorder.setOutputFormat(MediaRecorder.OutputFormat.THREE_GPP);
-        mRecorder.setOutputFile(fileNumber == 0 ? mFileName1 : mFileName2);
-        mRecorder.setAudioEncoder(MediaRecorder.AudioEncoder.AMR_NB);
+//    }
 
-        try {
-            mRecorder.prepare();
-        } catch (IOException e) {
-            Log.e(LOG_TAG, "prepare() failed");
-        }
 
-        mRecorder.start();
+//    }
+
+    private void startRecording(final int fileNumber) {
+        mRecorder = new AudioRecord(MediaRecorder.AudioSource.MIC,
+                RECORDER_SAMPLERATE, RECORDER_CHANNELS, RECORDER_AUDIO_ENCODING, bufferSize);
+
+        mRecorder.startRecording();
+
+        mIsRecording = true;
+
+        mRecordingThread = new Thread(new Runnable() {
+
+            public void run() {
+                writeAudioDataToFile(fileNumber);
+            }
+        }, "AudioRecorder Thread");
+
+        mRecordingThread.start();
     }
 
-    private void stopRecording() {
-        if (mRecorder != null) {
-            mRecorder.stop();
-            mRecorder.release();
-            mRecorder = null;
+    private void writeAudioDataToFile(int fileNumber) {
+        byte data[] = new byte[bufferSize];
+        String filename = fileNumber == 0 ? mFileName1 : mFileName2;
+        FileOutputStream os = null;
+
+        try {
+            os = new FileOutputStream(filename);
+        } catch (FileNotFoundException e) {
+            // TODO Auto-generated catch block
+            e.printStackTrace();
         }
+        Log.d(LOG_TAG, "mRecorderThread");
+        int read = 0;
+        scoreSum = 0.0;
+        if (null != os) {
+            while (mIsRecording) {
+                read = mRecorder.read(data, 0, bufferSize);
+
+                if (AudioRecord.ERROR_INVALID_OPERATION != read) {
+                    try {
+                        os.write(data);
+
+                        Double[] transformedData = calculateFFT(data);
+                        if (fileNumber == 0)
+                            mFirstSoundFrequency.addAll(Arrays.asList(transformedData));
+                        if (fileNumber == 1) {
+                            mSecondSoundFrequency.addAll(Arrays.asList(transformedData));
+                            if (mComparingThread == null) {
+                                mComparingThread = new Thread(new Runnable() {
+
+                                    public void run() {
+                                        Log.e(LOG_TAG, "mComparingThread");
+                                        compareFile();
+                                    }
+                                }, "Comparing Thread");
+                                mComparingThread.start();
+                            }
+                        }
+                    } catch (IOException e) {
+                        e.printStackTrace();
+                    }
+                }
+            }
+
+            try {
+                os.close();
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+        }
+    }
+
+    private void stopRecording(int fileNumber) {
+        if (mRecorder == null) return;
+        mIsRecording = false;
+
+        mRecorder.stop();
+        mRecorder.release();
+
+        mRecorder = null;
+
+        if (mRecordingThread != null)
+            mRecordingThread.interrupt();
+        mRecordingThread = null;
+
+        if (fileNumber == 1)
+            copyWaveFile(mFileName1, mNewFileName1);
+        if (fileNumber == 2)
+            copyWaveFile(mFileName2, mNewFileName2);
+
+        // deleteTempFile();
     }
 
     class RecordButton extends android.support.v7.widget.AppCompatButton {
-        int mStartRecording = 0;
 
         OnClickListener clicker = new OnClickListener() {
             public void onClick(View v) {
@@ -142,7 +317,7 @@ public class MainActivity extends AppCompatActivity {
                         break;
                     case 1:
                         setText("Start recording 2");
-                        stopRecording();
+                        stopRecording(1);
                         break;
                     case 0:
                         setText("Start recording 1");
@@ -152,67 +327,113 @@ public class MainActivity extends AppCompatActivity {
                 mStartRecording++;
             }
         };
-
         public RecordButton(Context ctx) {
             super(ctx);
-            setText("Start recording");
+            setText("Start recording 1");
             setOnClickListener(clicker);
         }
+
     }
 
+    class RecordSecondButton extends android.support.v7.widget.AppCompatButton {
+
+        OnClickListener clicker = new OnClickListener() {
+            public void onClick(View v) {
+                switch (mStartRecording % 3) {
+                    case 2:
+                        setText("Stop recording");
+                        break;
+                    case 0:
+                        mStartRecording++;
+                    case 1:
+                        stopRecording(1);
+                        setText("Start recording 2");
+                        break;
+                }
+                onRecord(mStartRecording);
+                mStartRecording++;
+            }
+        };
+        public RecordSecondButton(Context ctx) {
+            super(ctx);
+            setText("Start recording 2");
+            setOnClickListener(clicker);
+        }
+
+    }
     class PlayButton extends android.support.v7.widget.AppCompatButton {
+
         boolean mStartPlaying = true;
 
         OnClickListener clicker = new OnClickListener() {
             public void onClick(View v) {
                 ActivityCompat.requestPermissions(MainActivity.this, permissions, REQUEST_PLAY_AUDIO_PERMISSION);
-                onPlay(mStartPlaying, mFileName1);
+                onPlay(mStartPlaying, mNewFileName1);
                 if (mStartPlaying) {
-                    setText("Stop playing1");
+                    setText("Stop playing 1");
                 } else {
-                    setText("Start playing1");
+                    setText("Start playing 1");
                 }
                 mStartPlaying = !mStartPlaying;
             }
         };
-
         public PlayButton(Context ctx) {
             super(ctx);
             setText("Start playing1");
             setOnClickListener(clicker);
         }
-    }
 
+    }
     class PlayMusicButton extends android.support.v7.widget.AppCompatButton {
+
         boolean mStartPlaying = true;
 
         OnClickListener clicker = new OnClickListener() {
             public void onClick(View v) {
                 ActivityCompat.requestPermissions(MainActivity.this, permissions, REQUEST_PLAY_AUDIO_PERMISSION);
-                onPlay(mStartPlaying, mFileName2);
+                onPlay(mStartPlaying, mNewFileName2);
                 if (mStartPlaying) {
-                    setText("Stop playing music2");
+                    setText("Stop playing 2");
                 } else {
-                    setText("Start playing music2");
+                    setText("Start playing 2");
                 }
                 mStartPlaying = !mStartPlaying;
             }
         };
-
         public PlayMusicButton(Context ctx) {
             super(ctx);
             setText("Start playing music1");
             setOnClickListener(clicker);
         }
-    }
 
+    }
     class CompareButton extends android.support.v7.widget.AppCompatButton {
+
         OnClickListener clicker = new OnClickListener() {
             public void onClick(View v) {
+                if (mComparingThread != null) {
+                    mComparingThread.interrupt();
+                    if (!mComparingThread.isInterrupted())
+                        mComparingThread.interrupt();
+                }
+                mComparingThread = null;
+                scoreSum = 0.0;
+                mFirstSoundFrequency.clear();
+                mSecondSoundFrequency.clear();
+                byte[] data = new byte[bufferSize];
+                try {
+                    FileInputStream in1 = new FileInputStream(mNewFileName1);
+                    while (in1.read(data) != -1)
+                        mFirstSoundFrequency.addAll(Arrays.asList(calculateFFT(data)));
+                    FileInputStream in2 = new FileInputStream(mNewFileName2);
+                    while (in2.read(data) != -1)
+                        mSecondSoundFrequency.addAll(Arrays.asList(calculateFFT(data)));
+                } catch (IOException e) {
+                    e.printStackTrace();
+                }
                 compareFile();
             }
         };
-
         public CompareButton(Context ctx) {
             super(ctx);
             setText("Compare");
@@ -220,87 +441,62 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    @Override
-    public void onCreate(Bundle icicle) {
-        super.onCreate(icicle);
-        // Record to the external cache directory for visibility
-        mFileName1 = getExternalCacheDir().getAbsolutePath() + "/audiorecordtest1.3gp";
-        mNewFileName1 = getExternalCacheDir().getAbsolutePath() + "/audiorecordWithHeader.wav";
-        mNewFileName2 = getExternalCacheDir().getAbsolutePath() + "/musicWithHeader.wav";
-        mFileName2 = getExternalCacheDir().getAbsolutePath() + "/audiorecordtest2.3gp";
-
-        ActivityCompat.requestPermissions(MainActivity.this, permissions, REQUEST_RECORD_AUDIO_PERMISSION);
-
-        LinearLayout ll = new LinearLayout(MainActivity.this);
-        ll.setOrientation(LinearLayout.VERTICAL);
-        Button recordButton = new RecordButton(MainActivity.this);
-        ll.addView(recordButton,
-                new LinearLayout.LayoutParams(
-                        ViewGroup.LayoutParams.WRAP_CONTENT,
-                        ViewGroup.LayoutParams.WRAP_CONTENT,
-                        0));
-        Button play1 = new PlayButton(MainActivity.this);
-        ll.addView(play1,
-                new LinearLayout.LayoutParams(
-                        ViewGroup.LayoutParams.WRAP_CONTENT,
-                        ViewGroup.LayoutParams.WRAP_CONTENT,
-                        0));
-        Button play2 = new PlayMusicButton(MainActivity.this);
-        ll.addView(play2,
-                new LinearLayout.LayoutParams(
-                        ViewGroup.LayoutParams.WRAP_CONTENT,
-                        ViewGroup.LayoutParams.WRAP_CONTENT,
-                        0));
-        Button compareButton = new CompareButton(MainActivity.this);
-        ll.addView(compareButton,
-                new LinearLayout.LayoutParams(
-                        ViewGroup.LayoutParams.WRAP_CONTENT,
-                        ViewGroup.LayoutParams.WRAP_CONTENT,
-                        0));
-        mResultsTextView = new TextView(MainActivity.this);
-        mResultsTextView.setText("Results ");
-        ll.addView(mResultsTextView,
-                new LinearLayout.LayoutParams(
-                        ViewGroup.LayoutParams.MATCH_PARENT,
-                        ViewGroup.LayoutParams.WRAP_CONTENT,
-                        100));
-        mResults1TextView = new TextView(MainActivity.this);
-        ll.addView(mResults1TextView,
-                new LinearLayout.LayoutParams(
-                        ViewGroup.LayoutParams.MATCH_PARENT,
-                        ViewGroup.LayoutParams.WRAP_CONTENT,
-                        100));
-        setContentView(ll);
-    }
+    double scoreSum = 0.0;
 
     private void compareFile() {
-        copyWaveFile(mFileName1, mNewFileName1);
-        File f1 = new File(mNewFileName1);
+        final int SCORE_CONSTANT = 50;
+        String numbers = "";
+        String score = "";
 
-        copyWaveFile(mFileName2, mNewFileName2);
-        File f2 = new File(mNewFileName2);
+        int minLength = Math.min(mFirstSoundFrequency.size(), mSecondSoundFrequency.size());
+        Log.e(LOG_TAG + " min", minLength+" ");
+        numbers = calculateScore(numbers, minLength, 100);
 
-        Wave w1 = new Wave(f1.getAbsolutePath());
-        Wave w2 = new Wave(f2.getAbsolutePath());
-
-
-        try {
-            FingerprintSimilarity fps = w1.getFingerprintSimilarity(w2);
-            float score = fps.getScore();
-            float sim = fps.getSimilarity();
-            mResultsTextView.setText("Results: Score " + score + " Similarity " + sim);
-            mResults1TextView.setText("Results: FramePosition " + fps.getMostSimilarFramePosition() + " TimePosition " + fps.getsetMostSimilarTimePosition());
-
-            Log.d(LOG_TAG + " SIM ", sim + " buldum");
-            Log.d(LOG_TAG + " SCORE ", score + " ");
-            Log.d(" FramePosition ", fps.getMostSimilarFramePosition() + " ");
-            Log.d(" TimePosition ", fps.getsetMostSimilarTimePosition() + " ");
-        } catch (Exception e) {
-            e.printStackTrace();
-            mResultsTextView.setText("Results: Error");
-
+        Log.d(LOG_TAG + " coef ", numbers);
+        Log.d(LOG_TAG + " score ", score);
+        final double d = scoreSum;
+        if (Thread.currentThread().equals(mComparingThread)) {
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    mResultsTextView.setText("Score" + d);
+                }
+            });
+        } else {
+            mResultsTextView.setText("Score" + d);
         }
+
+        numbers = "";
+        for (int i = 0; i < minLength; i += 50)
+            numbers += mFirstSoundFrequency.get(i) + " ";
+        Log.d(LOG_TAG + "First", numbers);
+        numbers = "";
+            for (int i = 0; i < minLength; i += 50)
+                numbers += mSecondSoundFrequency.get(i) + " ";
+        Log.d(LOG_TAG + "Second", numbers);
+
+        if (mComparingThread != null) {
+            mComparingThread.interrupt();
+            if (!mComparingThread.isInterrupted())
+                mComparingThread.interrupt();
+        }
+        mComparingThread = null;
     }
+
+    private String calculateScore(String numbers, int smallestLength, int coefI) {
+        for (int i = 0; i < smallestLength; i += coefI) {
+            double dh = Math.abs(mFirstSoundFrequency.get(i) - mSecondSoundFrequency.get(i));
+            double coef = 1 - (Math.abs(dh / mFirstSoundFrequency.get(i)) > 1 ?
+                    1 : (mFirstSoundFrequency.get(i) == 0.0 ? 1 : Math.abs(dh / mFirstSoundFrequency.get(i))));
+            numbers += (coef) + " ";
+            Log.d(LOG_TAG + " N ", i+"");
+//                double scoreD = coef * SCORE_CONSTANT * Math.pow(10, Math.log(mFirstSoundFrequency.get(i) / 15));
+            scoreSum += coef;//scoreD;
+//                score += scoreD + " ";
+        }
+        return numbers;
+    }
+
 
     @Override
     public void onStop() {
@@ -410,4 +606,35 @@ public class MainActivity extends AppCompatActivity {
 
     }
 
+
+    public Double[] calculateFFT(byte[] signal) {
+        final int mNumberOfFFTPoints = 1024;
+        double mMaxFFTSample;
+
+        double temp;
+        Complex[] y;
+        Complex[] complexSignal = new Complex[mNumberOfFFTPoints];
+        Double[] absSignal = new Double[mNumberOfFFTPoints / 2];
+
+        for (int i = 0; i < mNumberOfFFTPoints; i++) {
+            temp = (double) ((signal[2 * i] & 0xFF) | (signal[2 * i + 1] << 8)) / 32768.0F;
+            complexSignal[i] = new Complex(temp, 0.0);
+        }
+
+        y = FFT.fft(complexSignal); // --> Here I use FFT class
+
+//        mMaxFFTSample = 0.0;
+//        mPeakPos = 0;
+        for (int i = 0; i < (mNumberOfFFTPoints / 2); i++) {
+            absSignal[i] = Math.sqrt(Math.pow(y[i].re(), 2) + Math.pow(y[i].im(), 2));
+//            if(absSignal[i] > mMaxFFTSample)
+//            {
+//                mMaxFFTSample = absSignal[i];
+//                mPeakPos = i;
+//            }
+        }
+
+        return absSignal;
+
+    }
 }
