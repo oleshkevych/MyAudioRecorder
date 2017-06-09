@@ -444,6 +444,7 @@ public class MainActivity extends AppCompatActivity {
     double scoreSum = 0.0;
 
     private void compareFile() {
+        //TODO: calculate only new part of the list
         final int SCORE_CONSTANT = 50;
         String numbers = "";
         String score = "";
